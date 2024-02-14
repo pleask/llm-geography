@@ -67,7 +67,7 @@ if __name__ == "__main__":
     WORKERS = 24
     RUN_TIME = 3
 
-    cities = df['Capital City'][:10].tolist()
+    cities = df['Capital City'].tolist()
     pairs = list(combinations(cities, 2))
     print(f'''
     Getting nearest cities for {len(pairs)} city pairs.
