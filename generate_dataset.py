@@ -137,14 +137,22 @@ if __name__ == "__main__":
 
     assert not (args.get_middle_city and args.wgs84), 'Cannot use wgs84 with get_middle_city'
 
+    current_file_path = os.path.abspath(__file__)
+    current_directory = os.path.dirname(current_file_path)
+
+    get_raw_data_path = lambda file_name: os.path.join(current_directory, "raw_data", file_name)
+
     if args.capitals_only:
         data = pd.read_csv(
-            "raw_data/capital_cities.csv",
+            get_raw_data_path("capital_cities.csv"),
             usecols=["Capital City", "Latitude", "Longitude"],
         )
         data = data.rename(columns={"Capital City": "City"})
     else:
-        data = pd.read_csv("raw_data/all_cities.csv", usecols=["city", "lat", "lng"])
+        data = pd.read_csv(
+            get_raw_data_path("all_cities.csv"),
+            usecols=["city", "lat", "lng"]
+        )
         data = data.rename(
             columns={"city": "City", "lat": "Latitude", "lng": "Longitude"}
         )
