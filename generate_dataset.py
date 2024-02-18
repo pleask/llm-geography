@@ -130,6 +130,9 @@ if __name__ == "__main__":
     parser.add_argument("--wgs84", action="store_true", default=False)
     parser.add_argument("--output_file", type=str, required=True)
     parser.add_argument("--city_count", type=int, default=-1)
+    parser.add_argument("--skip", type=int, default=0, help="Determines how many combinations to skip.")
+    parser.add_argument("--batch", type=int, default=-1, help="Number of combinations to process in this batch.")
+    parser.add_argument("--no_mp", action="store_true", default=False, help="Don't use multiprocessing, useful for debugging or running on slurm.")
     args = parser.parse_args()
 
     assert not (args.get_middle_city and args.wgs84), 'Cannot use wgs84 with get_middle_city'
@@ -154,6 +157,19 @@ if __name__ == "__main__":
     if args.city_count > 0:
         cities = cities[:args.city_count]
     pairs = combinations(cities, 2)
+
+    # Skip and batch logic for parallel processing.
+    if args.skip > 0:
+        for _ in range(args.skip):
+            next(pairs)
+    if args.batch > 0:
+        pairs = [next(pairs) for _ in range(args.batch)]
+    else:
+        pairs = list(pairs)
+
+    if len(pairs) == 0:
+        print("No pairs to process")
+        exit(0)
 
     columns = [
         "City A",
@@ -186,5 +202,9 @@ if __name__ == "__main__":
         with lock:
             row_df.to_csv(args.output_file, mode="a", index=False, header=False)
         
-    with ProcessPoolExecutor(max_workers=24) as executor:
-        executor.map(_job, pairs)
+    if args.no_mp:
+        for pair in tqdm(pairs):
+            _job(pair)
+    else:
+        with ProcessPoolExecutor(max_workers=24) as executor:
+            executor.map(_job, pairs)

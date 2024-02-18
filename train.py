@@ -120,6 +120,26 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+class FFNN(nn.Module):
+    def __init__(self, hidden_sizes):
+        super().__init__()
+        self.hidden_sizes = hidden_sizes
+
+        layers = []
+        prev_size = 4
+        for size in hidden_sizes:
+            layers.append(nn.Linear(prev_size, size))
+            layers.append(nn.ReLU())
+            prev_size = size
+        layers.append(nn.Linear(prev_size, 1))
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = x.to(torch.float32)
+        x = x.flatten(start_dim=1)
+        return self.model(x)
+
+
 if __name__ == "__main__":
     wandb.init(project="geo")
     dataset = CoordinateDistanceDataset("data/output.csv")
@@ -128,7 +148,7 @@ if __name__ == "__main__":
     val_count = len(dataset) - train_count
     train_dataset, val_dataset = random_split(dataset, [train_count, val_count])
 
-    EPOCHS = 50
+    EPOCHS = 500
     BATCH_SIZE = 4096
 
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -141,8 +161,8 @@ if __name__ == "__main__":
     D_HID = 1024
     NLAYERS = 1
     DROPOUT = 0.
-    LR = 1e-6
-    L1_LAMBDA = 0.00
+    LR = 1e-5
+    L1_LAMBDA = 1e-5
 
     wandb.config.update(
         {
@@ -166,6 +186,8 @@ if __name__ == "__main__":
         dropout=DROPOUT,
     ).to(device)
 
+    model = FFNN([512 for _ in range(20)]).to(device)
+
     total_params = sum(p.numel() for p in model.parameters())
     print("Total number of parameters in the model:", total_params)
 
@@ -175,6 +197,7 @@ if __name__ == "__main__":
     for epoch in tqdm(range(EPOCHS)):
         model.train()
         total_loss = 0
+        total_loss_with_l1 = 0
         for i, (x, y) in enumerate(train_dataloader):
             x = torch.stack([x[0], x[1]], dim=1).to(torch.float32).to(device)
             y = y.to(torch.float32).to(device).unsqueeze(1)
@@ -188,11 +211,14 @@ if __name__ == "__main__":
             l1_norm = sum(p.abs().sum() for p in model.parameters())
             loss += L1_LAMBDA * l1_norm
 
+            total_loss_with_l1 += loss.item()
+
             loss.backward()
             optimizer.step()
 
         avg_train_loss = total_loss / len(train_dataloader)
-        wandb.log({"train_loss": avg_train_loss})
+        avg_train_loss_with_l1 = total_loss_with_l1 / len(train_dataloader)
+        wandb.log({"train_loss": avg_train_loss, "train_loss_with_l1": avg_train_loss_with_l1})
 
         model.eval()
         with torch.no_grad():
@@ -206,7 +232,6 @@ if __name__ == "__main__":
 
             avg_val_loss = total_loss / len(val_dataloader)
         wandb.log({"val_loss": avg_val_loss})
-        wandb.log({'example': torch.abs(y[0] - outputs[0])})
 
         tqdm.write(
             f"Epoch {epoch}: Validation loss {avg_val_loss:.3f}, train loss {avg_train_loss:.3f}"
