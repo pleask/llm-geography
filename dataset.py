@@ -14,9 +14,10 @@ def _normalise_column(df, column_name):
 
 
 class BaseDataset(ABC, Dataset):
-    def __init__(self, csv_file):
+    def __init__(self, csv_file, normalise=True):
         self.df = pd.read_csv(csv_file)
-        self._normalise_columns()
+        if normalise:
+            self._normalise_columns()
 
     def __len__(self):
         return len(self.df)
@@ -104,20 +105,31 @@ class CoordinateDistanceDataset(BaseDataset):
 
 
 class CoordinateDataset(BaseDataset):
-    def __init__(self, csv_file):
-        super().__init__(csv_file)
+    def __init__(self, csv_file, normalise=True):
+        super().__init__(csv_file, normalise=normalise)
         self.cities, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"])
 
-    def __getitem__(self, idx):
-        city_name = self.cities[idx]
-        try:
-            latitude = self.df.loc[self.df["City A"] == city_name, "City A Latitude"].values[0]
-            longitude = self.df.loc[self.df["City A"] == city_name, "City A Longitude"].values[0]
-        except IndexError:
-            latitude = self.df.loc[self.df["City B"] == city_name, "City B Latitude"].values[0]
-            longitude = self.df.loc[self.df["City B"] == city_name, "City B Longitude"].values[0]
+        self.coordinates = [None for _ in range(len(self.cities))]
 
-        return idx, [latitude, longitude]
+        def _get_coordinates(column):
+            self.df.set_index([column], inplace=True)
+            for i in range(len(self.cities)):
+                try:
+                    coordinates = [self.df.loc[self.cities[i], f'{column} Latitude'], self.df.loc[self.cities[i], f'{column} Longitude']]
+                except KeyError:
+                    pass
+
+                try:
+                    self.coordinates[i] = (coordinates[0].values[0], coordinates[1].values[0])
+                except Exception as e:
+                    # Handle when we only get one value anyway
+                    self.coordinates[i] = coordinates
+        
+        _get_coordinates('City A')
+        _get_coordinates('City B')
+
+    def __getitem__(self, idx):
+        return idx, self.coordinates[idx]
 
     def _normalise_columns(self):
         # Don't normalise the columns for the linear probe.

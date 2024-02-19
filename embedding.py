@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, help='Path to the dataset CSV file')
     args = parser.parse_args()
 
-    coordinate_dataset = CoordinateDataset(args.dataset, city_count=1000)
+    coordinate_dataset = CoordinateDataset(args.dataset)
     coordinates = [d[1] for d in coordinate_dataset]
 
     # TODO: Load the parameters too
