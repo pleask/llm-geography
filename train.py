@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import torch
 from torch import nn
@@ -6,26 +7,32 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split 
 from tqdm import tqdm
 import wandb
-from dataset import CityDistanceDataset, CoordinateDistanceDataset
+from dataset import CityDistanceDataset, CoordinateDistanceDataset, MiddleCityDataset
 
-from model import RegressionTransformer
+from model import Transformer
 
-
+# TODO: Lots of if statements for middle_city - find a better way to handle this
 if __name__ == "__main__":
     wandb.init(project="geo")
 
     parser = argparse.ArgumentParser(description='Train model on geography dataset')
     parser.add_argument('--dataset', type=str, help='Path to the dataset CSV file')
-    parser.add_argument('--use_coordinates', action='store_true', default=False, help='Whether or not to use the coordinates, otherwise just uses city names as covariates.')
+    parser.add_argument('--coordinate_distance', action='store_true', default=False, help='Use the coordinates as the covariates and the distance as the target.')
+    parser.add_argument('--city_distance', action='store_true', default=False, help='Use the city names as the covariates and the distance as the target.')
+    parser.add_argument('--middle_city', action='store_true', default=False, help='Use the city names as the covariates and the middle city as the target.')
     parser.add_argument('--model_path', type=str, help='Where to save the model.', required=True)
     parser.add_argument("--print_examples", action="store_true", default=False, help="Print out examples of the model's predictions.")
 
     args = parser.parse_args()
 
-    if args.use_coordinates:
+    assert args.coordinate_distance or args.city_distance or args.middle_city, "Please specify the type of dataset you are using."
+
+    if args.coordinate_distance:
         dataset = CoordinateDistanceDataset(args.dataset)
-    else:
+    elif args.city_distance:
         dataset = CityDistanceDataset(args.dataset)
+    elif args.middle_city:
+        dataset = MiddleCityDataset(args.dataset)
 
     train_count = int(len(dataset) * 0.8)
     val_count = len(dataset) - train_count
@@ -46,7 +53,7 @@ if __name__ == "__main__":
     D_HID = 128
     NLAYERS = 1
     DROPOUT = 0.
-    LR = 1e-4
+    LR = 1e-3
     L1_LAMBDA = 0. #1e-5
 
     wandb.config.update(
@@ -63,19 +70,27 @@ if __name__ == "__main__":
         }
     )
 
-    model = RegressionTransformer(
+    model = Transformer(
         d_model=D_MODEL,
         nhead=NHEAD,
         d_hid=D_HID,
         nlayers=NLAYERS,
         dropout=DROPOUT,
-        ntoken=len(dataset.city_to_int)
+        ntoken=len(dataset.city_to_int),
+        regressor=not args.middle_city,
     ).to(device)
+
+    if os.path.exists(args.model_path):
+        model.load_state_dict(torch.load(args.model_path))
+        print("Loaded model parameters from existing model at", args.model_path)
 
     total_params = sum(p.numel() for p in model.parameters())
     print("Total number of parameters in the model:", total_params)
 
-    loss_fn = nn.MSELoss()
+    if args.middle_city:
+        loss_fn = nn.CrossEntropyLoss()
+    else:
+        loss_fn = nn.MSELoss()
     optimizer = Adam(model.parameters(), lr=LR)
 
     def _print_examples(outputs, y, train=True):
@@ -86,14 +101,23 @@ if __name__ == "__main__":
         else:
             print('Val Examples')
         for _o, _y in zip(outputs[:3], y[:3]):
-            print("{:.3f}".format(_o.item()), "{:.3f}".format(_y.item()))
+            if args.middle_city:
+                print(torch.argmax(_o).item(), _y.item())
+            else:
+                print("{:.3f}".format(_o.item()), "{:.3f}".format(_y.item()))
 
     def _process_batch(x, y):
-        if args.use_coordinates:
+        if args.coordinate_distance:
             x = [x[0].to(device), x[1].to(torch.float32).to(device)]
         else:
             x = torch.stack([x[0], x[1]], dim=1).to(device)
-        y = y.to(torch.float32).to(device).unsqueeze(1)
+        
+        # TODO: Why is this necessary?
+        if args.middle_city:
+            y = y[0].to(device)
+        else:
+            y = y.to(torch.float32).to(device).unsqueeze(1)
+
         return x, y
 
     for epoch in tqdm(range(EPOCHS)):

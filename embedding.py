@@ -6,7 +6,7 @@ from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import Dataset
 
-from model import RegressionTransformer
+from model import Transformer
 from dataset import CoordinateDataset
 
 
@@ -21,7 +21,7 @@ if __name__ == '__main__':
 
     # TODO: Load the parameters too
     # TODO: Why 987 and not 1000?
-    model = RegressionTransformer(d_model=32, nhead=2, d_hid=128, nlayers=1, dropout=0.0, ntoken=987)
+    model = Transformer(d_model=32, nhead=2, d_hid=128, nlayers=1, dropout=0.0, ntoken=987)
     model.load_state_dict(torch.load(args.model_path))
 
     embeddings = None

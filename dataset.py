@@ -14,11 +14,8 @@ def _normalise_column(df, column_name):
 
 
 class BaseDataset(ABC, Dataset):
-    def __init__(self, csv_file, city_count=-1):
+    def __init__(self, csv_file):
         self.df = pd.read_csv(csv_file)
-        if city_count > 0:
-            self.df = self.df[:city_count]
-
         self._normalise_columns()
 
     def __len__(self):
@@ -33,14 +30,35 @@ class BaseDataset(ABC, Dataset):
         pass
 
 
-class CityDistanceDataset(BaseDataset):
+def get_unique_cities(*sequences):
+    cities = set()
+    for sequence in sequences:
+        sequence.unique()
+        cities |= set(sequence)
+    return sorted(list(cities)), {city: i for i, city in enumerate(cities)}
+
+
+class MiddleCityDataset(BaseDataset):
     def __init__(self, csv_file, city_count=-1):
-        super().__init__(csv_file, city_count)
-        cities_a = self.df["City A"].unique()
-        cities_b = self.df["City B"].unique()
-        combined_cities = list(set(cities_a) | set(cities_b))
-        combined_cities = sorted(combined_cities)
-        self.city_to_int = {city: i for i, city in enumerate(combined_cities)}
+        super().__init__(csv_file)
+        _, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"], self.df['Middle City'])
+
+    def __getitem__(self, idx):
+        x = [
+            self.city_to_int[self.df.loc[idx, "City A"]],
+            self.city_to_int[self.df.loc[idx, "City B"]],
+        ]
+        y = self.city_to_int[self.df.loc[idx, "Middle City"]],
+        return x, y
+
+    def _normalise_columns(self):
+        pass
+
+
+class CityDistanceDataset(BaseDataset):
+    def __init__(self, csv_file):
+        super().__init__(csv_file)
+        _, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"])
 
     def _normalise_columns(self):
         _normalise_column(self.df, "Distance")
@@ -85,45 +103,10 @@ class CoordinateDistanceDataset(BaseDataset):
         return x, y
 
 
-# TODO: Switch to using the other dataset for consistency (ie. city count)
-class CoordinateDataset(Dataset):
-    def __init__(self, city_count=-1):
-        self.df = load_raw_data()
-        if city_count > 0:
-            self.df = self.df[:city_count]
-
-        _normalise_column(self.df, "Latitude")
-        _normalise_column(self.df, "Longitude")
-
-        cities = self.df.index.values.tolist()
-        cities = sorted(cities)
-        print(cities[8])
-        print(cities[384])
-        print(cities[784])
-        quit()
-        self.city_to_int = {city: i for i, city in enumerate(cities)}
-
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        x = self.city_to_int[row.name],
-        y = [
-            row['Latitude'],
-            row['Longitude']
-        ]
-        return x, y
-
-    def __len__(self):
-        return len(self.df)
-
-
 class CoordinateDataset(BaseDataset):
-    def __init__(self, csv_file, city_count=-1):
-        super().__init__(csv_file, city_count)
-        cities_a = self.df["City A"].unique()
-        cities_b = self.df["City B"].unique()
-        self.cities = list(set(cities_a) | set(cities_b))
-        self.cities = sorted(self.cities)
-        self.city_to_int = {city: i for i, city in enumerate(self.cities)}
+    def __init__(self, csv_file):
+        super().__init__(csv_file)
+        self.cities, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"])
 
     def __getitem__(self, idx):
         city_name = self.cities[idx]

@@ -5,6 +5,22 @@ from torch import Tensor, nn
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 
+class ClassificationHead(nn.Module):
+    def __init__(self, d_model: int, ntoken: int):
+        super().__init__()
+        self.linear = nn.Linear(d_model, ntoken)
+
+        self.init_weights()
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.linear(x)
+
+    def init_weights(self) -> None:
+        initrange = 0.1
+        self.linear.bias.data.zero_()
+        self.linear.weight.data.uniform_(-initrange, initrange)
+
+
 class RegressionHead(nn.Module):
     def __init__(self, d_model: int):
         super().__init__()
@@ -21,7 +37,7 @@ class RegressionHead(nn.Module):
         self.linear.weight.data.uniform_(-initrange, initrange)
 
 
-class Transformer(nn.Module):
+class TransformerInner(nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -52,7 +68,7 @@ class Transformer(nn.Module):
         return output
 
 
-class RegressionTransformer(nn.Module):
+class Transformer(nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -60,7 +76,8 @@ class RegressionTransformer(nn.Module):
         d_hid: int,
         nlayers: int,
         dropout: float = 0.5,
-        ntoken=-1
+        ntoken=-1,
+        regressor=True,
     ):
         super().__init__()
 
@@ -69,8 +86,12 @@ class RegressionTransformer(nn.Module):
         else:
             self.embedding = nn.Embedding(ntoken, d_model)
 
-        self.transformer = Transformer(d_model, nhead, d_hid, nlayers, dropout)
-        self.regression_head = RegressionHead(d_model)
+        self.transformer = TransformerInner(d_model, nhead, d_hid, nlayers, dropout)
+        if regressor:
+            self.regression_head = RegressionHead(d_model)
+        else:
+            self.regression_head = ClassificationHead(d_model, ntoken)
+
         self.d_model = d_model
 
         self.init_weights()
