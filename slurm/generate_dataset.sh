@@ -5,12 +5,12 @@
 #SBATCH -p shared
 #SBATCH --time=2-00:00:00
 #SBATCH --output=/nobackup/wclv88/geography/outs/slurm-%A_%a.out
-#SBATCH --array=0-9999
+#SBATCH --array=0-99
 
 module load python/3.10.8
 module load $PYTHON_BUILD_MODULES
 
-COUNT=5000
+COUNT=50
 
 stdbuf -oL \
 python3 \
