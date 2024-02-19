@@ -123,26 +123,13 @@ def get_row(data, city_A, city_B, get_middle_city=False, wgs84=False):
     return pd.Series(row)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--capitals_only", action="store_true", default=False)
-    parser.add_argument("--get_middle_city", action="store_true", default=False)
-    parser.add_argument("--wgs84", action="store_true", default=False)
-    parser.add_argument("--output_file", type=str, required=True)
-    parser.add_argument("--city_count", type=int, default=-1)
-    parser.add_argument("--skip", type=int, default=0, help="Determines how many combinations to skip.")
-    parser.add_argument("--batch", type=int, default=-1, help="Number of combinations to process in this batch.")
-    parser.add_argument("--no_mp", action="store_true", default=False, help="Don't use multiprocessing, useful for debugging or running on slurm.")
-    args = parser.parse_args()
-
-    assert not (args.get_middle_city and args.wgs84), 'Cannot use wgs84 with get_middle_city'
-
+def load_raw_data(capitals_only=False):
     current_file_path = os.path.abspath(__file__)
     current_directory = os.path.dirname(current_file_path)
 
     get_raw_data_path = lambda file_name: os.path.join(current_directory, "raw_data", file_name)
 
-    if args.capitals_only:
+    if capitals_only:
         data = pd.read_csv(
             get_raw_data_path("capital_cities.csv"),
             usecols=["Capital City", "Latitude", "Longitude"],
@@ -160,6 +147,24 @@ if __name__ == "__main__":
     data["Latitude"] = data["Latitude"].astype("float32")
     data["Longitude"] = data["Longitude"].astype("float32")
     data.set_index("City", inplace=True)
+    return data
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--capitals_only", action="store_true", default=False)
+    parser.add_argument("--get_middle_city", action="store_true", default=False)
+    parser.add_argument("--wgs84", action="store_true", default=False)
+    parser.add_argument("--output_file", type=str, required=True)
+    parser.add_argument("--city_count", type=int, default=-1)
+    parser.add_argument("--skip", type=int, default=0, help="Determines how many combinations to skip.")
+    parser.add_argument("--batch", type=int, default=-1, help="Number of combinations to process in this batch.")
+    parser.add_argument("--no_mp", action="store_true", default=False, help="Don't use multiprocessing, useful for debugging or running on slurm.")
+    args = parser.parse_args()
+
+    assert not (args.get_middle_city and args.wgs84), 'Cannot use wgs84 with get_middle_city'
+
+    data = load_raw_data()
 
     cities = data.index.values.tolist()
     if args.city_count > 0:

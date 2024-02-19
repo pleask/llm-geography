@@ -1,196 +1,14 @@
-from abc import abstractmethod, ABC
 import argparse
-import math 
 
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
 import torch
-from torch import nn, Tensor
+from torch import nn
 from torch.optim import Adam
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
-from torch.utils.data import Dataset, DataLoader, random_split 
+from torch.utils.data import DataLoader, random_split 
 from tqdm import tqdm
 import wandb
+from dataset import CityDistanceDataset, CoordinateDistanceDataset
 
-
-class BaseDataset(ABC, Dataset):
-    def __init__(self, csv_file, city_count=-1):
-        self.df = pd.read_csv(csv_file)
-        if city_count > 0:
-            self.df = self.df[:city_count]
-
-        self._normalise_columns()
-
-    def _normalise_column(self, column_name):
-        scaler = StandardScaler()
-        self.df[column_name] = scaler.fit_transform(self.df[[column_name]])
-
-    def __len__(self):
-        return len(self.df)
-
-    @abstractmethod
-    def __getitem__(self, idx):
-        pass
-
-    @abstractmethod
-    def _normalise_columns(self):
-        pass
-
-
-class CoordinateDistanceDataset(BaseDataset):
-    """
-    X values are the normalised coordinates of the city, and the y value is the
-    distance between the two cities.
-    """
-    def _normalise_columns(self):
-        for column_name in [
-            "City A Latitude",
-            "City A Longitude",
-            "City B Latitude",
-            "City B Longitude",
-            "Distance",
-        ]:
-            self._normalise_column(column_name)
-
-
-    def __getitem__(self, idx):
-        x = [
-            torch.tensor([
-                self.df.loc[idx, "City A Latitude"],
-                self.df.loc[idx, "City A Longitude"],
-            ], dtype=torch.float32),
-            torch.tensor([
-                self.df.loc[idx, "City B Latitude"],
-                self.df.loc[idx, "City B Longitude"],
-            ], dtype=torch.float32),
-        ]
-        y = self.df.loc[idx, "Distance"]
-        return x, y
-
-
-class CityDistanceDataset(BaseDataset):
-    def __init__(self, csv_file, city_count=-1):
-        super().__init__(csv_file, city_count)
-        cities_a = self.df["City A"].unique()
-        cities_b = self.df["City B"].unique()
-        combined_cities = list(set(cities_a) | set(cities_b))
-        self.city_to_int = {city: i for i, city in enumerate(combined_cities)}
-
-    def _normalise_columns(self):
-        self._normalise_column("Distance")
-
-    def __getitem__(self, idx):
-        x = [
-            self.city_to_int[self.df.loc[idx, "City A"]],
-            self.city_to_int[self.df.loc[idx, "City B"]],
-        ]
-        y = self.df.loc[idx, "Distance"]
-        return x, y
-
-
-
-class RegressionHead(nn.Module):
-    def __init__(self, d_model: int):
-        super().__init__()
-        self.linear = nn.Linear(d_model, 1)
-
-        self.init_weights()
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.linear(x)
-
-    def init_weights(self) -> None:
-        initrange = 0.1
-        self.linear.bias.data.zero_()
-        self.linear.weight.data.uniform_(-initrange, initrange)
-
-
-class Transformer(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        d_hid: int,
-        nlayers: int,
-        dropout: float = 0.5,
-    ):
-        super().__init__()
-        self.model_type = "Transformer"
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        encoder_layers = TransformerEncoderLayer(d_model, nhead, d_hid, dropout, batch_first=True)
-        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
-        self.d_model = d_model
-
-    def forward(self, src: Tensor, src_mask: Tensor = None) -> Tensor:
-        """
-        Arguments:
-            src: Tensor, shape ``[seq_len, batch_size]``
-            src_mask: Tensor, shape ``[seq_len, seq_len]``
-
-        Returns:
-            output Tensor of shape ``[seq_len, batch_size, ntoken]``
-        """
-        src = self.pos_encoder(src)
-        output = self.transformer_encoder(src)
-        output = torch.mean(output, dim=1)
-        return output
-
-
-class RegressionTransformer(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        nhead: int,
-        d_hid: int,
-        nlayers: int,
-        dropout: float = 0.5,
-        ntoken=-1
-    ):
-        super().__init__()
-
-        if ntoken == -1:
-            self.embedding = nn.Linear(2, d_model)
-        else:
-            self.embedding = nn.Embedding(ntoken, d_model)
-
-        self.transformer = Transformer(d_model, nhead, d_hid, nlayers, dropout)
-        self.regression_head = RegressionHead(d_model)
-        self.d_model = d_model
-
-        self.init_weights()
-
-    def init_weights(self) -> None:
-        initrange = 0.1
-        self.embedding.weight.data.uniform_(-initrange, initrange)
-
-    def forward(self, src: Tensor) -> Tensor:
-        src = self.embedding(src) * math.sqrt(self.d_model)
-        src = self.transformer(src)
-        output = self.regression_head(src)
-        return output
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model)
-        )
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """
-        Arguments:
-            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
-        """
-        x = x + self.pe[: x.size(0)]
-        return self.dropout(x)
+from model import RegressionTransformer
 
 
 if __name__ == "__main__":
@@ -198,7 +16,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Train model on geography dataset')
     parser.add_argument('--dataset', type=str, help='Path to the dataset CSV file')
-    parser.add_argument('--use_coordinates', type=str, help='Whether or not to use the coordinates, otherwise just uses city names as covariates.')
+    parser.add_argument('--use_coordinates', action='store_true', default=False, help='Whether or not to use the coordinates, otherwise just uses city names as covariates.')
+    parser.add_argument('--model_path', type=str, help='Where to save the model.', required=True)
+    parser.add_argument("--print_examples", action="store_true", default=False, help="Print out examples of the model's predictions.")
+
     args = parser.parse_args()
 
     if args.use_coordinates:
@@ -257,9 +78,8 @@ if __name__ == "__main__":
     loss_fn = nn.MSELoss()
     optimizer = Adam(model.parameters(), lr=LR)
 
-    LOG_EXAMPLES = True
     def _print_examples(outputs, y, train=True):
-        if not LOG_EXAMPLES:
+        if not args.print_examples:
             return
         if train:
             print('Train Examples')
@@ -269,7 +89,7 @@ if __name__ == "__main__":
             print("{:.3f}".format(_o.item()), "{:.3f}".format(_y.item()))
 
     def _process_batch(x, y):
-        if args.coordinates:
+        if args.use_coordinates:
             x = [x[0].to(device), x[1].to(torch.float32).to(device)]
         else:
             x = torch.stack([x[0], x[1]], dim=1).to(device)
@@ -320,3 +140,5 @@ if __name__ == "__main__":
         tqdm.write(
             f"Epoch {epoch}: Validation loss {avg_val_loss:.3f}, train loss {avg_train_loss:.3f}, train loss with l1 {avg_train_loss_with_l1:.3f}"
         )
+
+        torch.save(model.state_dict(), args.model_path)

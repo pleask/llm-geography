@@ -2,3 +2,5 @@ venv/
 wandb/
 data/
 nohup.out
+models/
+__pycache__/
