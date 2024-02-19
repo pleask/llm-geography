@@ -18,5 +18,6 @@ geography/generate_dataset.py \
     --output_file /nobackup/wclv88/geography/datasets/dataset_${SLURM_ARRAY_TASK_ID}.csv \
     --skip $((SLURM_ARRAY_TASK_ID * COUNT)) \
     --batch $COUNT \
-    --city_count 10000 \
+    --city_count 100 \
+    --get_middle_city
     --no_mp

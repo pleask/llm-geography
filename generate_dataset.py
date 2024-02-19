@@ -169,6 +169,9 @@ if __name__ == "__main__":
     cities = data.index.values.tolist()
     if args.city_count > 0:
         cities = cities[:args.city_count]
+
+    data = data.loc[cities]
+
     pairs = combinations(cities, 2)
 
     # Skip and batch logic for parallel processing.
