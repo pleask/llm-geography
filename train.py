@@ -76,7 +76,7 @@ if __name__ == "__main__":
         d_hid=D_HID,
         nlayers=NLAYERS,
         dropout=DROPOUT,
-        ntoken=len(dataset.city_to_int),
+        ntoken=dataset.city_count,
         regressor=not args.middle_city,
     ).to(device)
 

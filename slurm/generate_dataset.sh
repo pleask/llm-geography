@@ -12,10 +12,13 @@ module load $PYTHON_BUILD_MODULES
 
 COUNT=50
 
+OUTPUT_DIR=/nobackup/wclv88/geography/datasets/dataset_${SLURM_ARRAY_TASK_ID}
+mkdir -p $OUTPUT_DIR
+
 stdbuf -oL \
 python3 \
 geography/generate_dataset.py \
-    --output_file /nobackup/wclv88/geography/datasets/dataset_${SLURM_ARRAY_TASK_ID}.csv \
+    --output_dir $OUTPUT_DIR \
     --skip $((SLURM_ARRAY_TASK_ID * COUNT)) \
     --batch $COUNT \
     --city_count 1000 \

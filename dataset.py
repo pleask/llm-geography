@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import os
 
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
@@ -13,36 +14,14 @@ def _normalise_column(df, column_name):
     df[column_name] = scaler.fit_transform(df[[column_name]])
 
 
-class BaseDataset(ABC, Dataset):
-    def __init__(self, csv_file, normalise=True):
-        self.df = pd.read_csv(csv_file)
-        if normalise:
-            self._normalise_columns()
-
-    def __len__(self):
-        return len(self.df)
-
-    @abstractmethod
-    def __getitem__(self, idx):
-        pass
-
-    @abstractmethod
-    def _normalise_columns(self):
-        pass
+def get_city_to_int(data_dir):
+    cities_df = pd.read_csv(os.path.join(data_dir, "cities.csv"))
+    return {cities_df.loc[i]['City']: i for i in range(len(cities_df))}
 
 
-def get_unique_cities(*sequences):
-    cities = set()
-    for sequence in sequences:
-        sequence.unique()
-        cities |= set(sequence)
-    return sorted(list(cities)), {city: i for i, city in enumerate(cities)}
-
-
-class MiddleCityDataset(BaseDataset):
-    def __init__(self, csv_file, city_count=-1):
-        super().__init__(csv_file)
-        _, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"], self.df['Middle City'])
+class MiddleCityDataset(Dataset):
+    def __init__(self, data_dir):
+        self.cities_to_int = get_city_to_int(data_dir)
 
     def __getitem__(self, idx):
         x = [
@@ -55,11 +34,15 @@ class MiddleCityDataset(BaseDataset):
     def _normalise_columns(self):
         pass
 
+    def __len__(self):
+        return len(self.df)
 
-class CityDistanceDataset(BaseDataset):
-    def __init__(self, csv_file):
-        super().__init__(csv_file)
-        _, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"])
+
+class CityDistanceDataset(Dataset):
+    def __init__(self, data_dir):
+        self.city_to_int = get_city_to_int(data_dir)
+        self.city_count = len(self.city_to_int)
+        self.df = pd.read_csv(os.path.join(data_dir, "distances.csv"))
 
     def _normalise_columns(self):
         _normalise_column(self.df, "Distance")
@@ -72,12 +55,25 @@ class CityDistanceDataset(BaseDataset):
         y = self.df.loc[idx, "Distance"]
         return x, y
 
+    def __len__(self):
+        return len(self.df)
 
-class CoordinateDistanceDataset(BaseDataset):
+
+class CoordinateDistanceDataset(Dataset):
     """
     X values are the normalised coordinates of the city, and the y value is the
     distance between the two cities.
     """
+    def __init__(self, data_dir):
+        cities_df = pd.read_csv(os.path.join(data_dir, "cities.csv"))
+        self.city_count = len(cities_df)
+        distances_df = pd.read_csv(os.path.join(data_dir, "distances.csv"))
+
+        cities_df.columns = ['City A', 'City A Latitude', 'City A Longitude']
+        merged_df = pd.merge(distances_df, cities_df, on='City A')
+        cities_df.columns = ['City B', 'City B Latitude', 'City B Longitude']
+        merged_df = pd.merge(merged_df, cities_df, on='City B')
+
     def _normalise_columns(self):
         for column_name in [
             "City A Latitude",
@@ -87,7 +83,6 @@ class CoordinateDistanceDataset(BaseDataset):
             "Distance",
         ]:
             _normalise_column(self.df, column_name)
-
 
     def __getitem__(self, idx):
         x = [
@@ -102,38 +97,20 @@ class CoordinateDistanceDataset(BaseDataset):
         ]
         y = self.df.loc[idx, "Distance"]
         return x, y
+    
+    def __len__(self):
+        return len(self.df)
 
 
-class CoordinateDataset(BaseDataset):
-    def __init__(self, csv_file, normalise=True):
-        super().__init__(csv_file, normalise=normalise)
-        self.cities, self.city_to_int = get_unique_cities(self.df["City A"], self.df["City B"])
-
-        self.coordinates = [None for _ in range(len(self.cities))]
-
-        def _get_coordinates(column):
-            self.df.set_index([column], inplace=True)
-            for i in range(len(self.cities)):
-                try:
-                    coordinates = [self.df.loc[self.cities[i], f'{column} Latitude'], self.df.loc[self.cities[i], f'{column} Longitude']]
-                except KeyError:
-                    pass
-
-                try:
-                    self.coordinates[i] = (coordinates[0].values[0], coordinates[1].values[0])
-                except Exception as e:
-                    # Handle when we only get one value anyway
-                    self.coordinates[i] = coordinates
-        
-        _get_coordinates('City A')
-        _get_coordinates('City B')
+class CoordinateDataset(Dataset):
+    def __init__(self, data_dir):
+        self.df = pd.read_csv(os.path.join(data_dir, "cities.csv"))
 
     def __getitem__(self, idx):
-        return idx, self.coordinates[idx]
-
-    def _normalise_columns(self):
-        # Don't normalise the columns for the linear probe.
-        pass
+        row = self.df.iloc[idx]
+        latitude = row["Latitude"]
+        longitude = row["Longitude"]
+        return idx, (latitude, longitude)
 
     def __len__(self):
-        return len(self.city_to_int)
+        return len(self.df)

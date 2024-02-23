@@ -83,7 +83,9 @@ def get_coordinates(data, city):
     return d
 
 
-def get_distance_between_cities(city_A_coords, city_B_coords, wgs84=False):
+def get_distance_between_cities(data, city_A, city_B, wgs84=False):
+    city_A_coords = get_coordinates(data, city_A)
+    city_B_coords = get_coordinates(data, city_B)
     if wgs84:
         geodesic_line = Geodesic.WGS84.InverseLine(
             city_A_coords["Latitude"],
@@ -96,31 +98,6 @@ def get_distance_between_cities(city_A_coords, city_B_coords, wgs84=False):
         city_A = (city_A_coords["Latitude"], city_A_coords["Longitude"])
         city_B = (city_B_coords["Latitude"], city_B_coords["Longitude"])
         return great_circle(city_A, city_B).kilometers
-
-
-def get_row(data, city_A, city_B, get_middle_city=False, wgs84=False):
-    city_A_coords = get_coordinates(data, city_A)
-    city_B_coords = get_coordinates(data, city_B)
-    distance_A_B = get_distance_between_cities(city_A_coords, city_B_coords, wgs84=wgs84)
-
-    row = {
-        "City A": city_A,
-        "City A Latitude": city_A_coords["Latitude"],
-        "City A Longitude": city_A_coords["Longitude"],
-        "City B": city_B,
-        "City B Latitude": city_B_coords["Latitude"],
-        "City B Longitude": city_B_coords["Longitude"],
-        "Distance": distance_A_B,
-    }
-
-    if get_middle_city:
-        middle_city = get_nearest_city(data, city_A, city_B)
-        row["Middle City"] = middle_city
-        middle_city_coords = get_coordinates(data, middle_city)
-        row["Middle City Latitude"] = middle_city_coords["Latitude"]
-        row["Middle City Longitude"] = middle_city_coords["Longitude"]
-
-    return pd.Series(row)
 
 
 def load_raw_data(capitals_only=False):
@@ -146,6 +123,7 @@ def load_raw_data(capitals_only=False):
 
     data["Latitude"] = data["Latitude"].astype("float32")
     data["Longitude"] = data["Longitude"].astype("float32")
+    data.drop_duplicates(subset='City', keep='first', inplace=True)
     data.set_index("City", inplace=True)
     return data
 
@@ -155,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("--capitals_only", action="store_true", default=False)
     parser.add_argument("--get_middle_city", action="store_true", default=False)
     parser.add_argument("--wgs84", action="store_true", default=False)
-    parser.add_argument("--output_file", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, required=True, help="Output directory where the data files will be created.")
     parser.add_argument("--city_count", type=int, default=-1)
     parser.add_argument("--skip", type=int, default=0, help="Determines how many combinations to skip.")
     parser.add_argument("--batch", type=int, default=-1, help="Number of combinations to process in this batch.")
@@ -172,6 +150,9 @@ if __name__ == "__main__":
 
     data = data.loc[cities]
 
+    assert os.path.exists(args.output_dir), "Output directory does not exist"
+    data.to_csv(os.path.join(args.output_dir, "cities.csv"))
+
     pairs = combinations(cities, 2)
 
     # Skip and batch logic for parallel processing.
@@ -187,40 +168,24 @@ if __name__ == "__main__":
         print("No pairs to process")
         exit(0)
 
-    columns = [
-        "City A",
-        "City A Latitude",
-        "City A Longitude",
-        "City B",
-        "City B Latitude",
-        "City B Longitude",
-        "Distance",
-    ]
+    # Create empty dataframes to write to.
+    distance_columns = ['City A', 'City B', 'Distance']
+    distance_df = pd.DataFrame(columns=distance_columns)
+    distance_df_path = os.path.join(args.output_dir, "distances.csv")
+    distance_df.to_csv(distance_df_path, index=False)
+
     if args.get_middle_city:
-        columns.extend(
-            [
-                "Middle City",
-                "Middle City Latitude",
-                "Middle City Longitude",
-            ]
-        )
-
-    assert not os.path.exists(args.output_file), "Output file already exists"
-
-    # Create an empty dataframe and write the columns to the output file
-    df = pd.DataFrame(columns=columns)
-    df.to_csv(args.output_file, index=False)
-
-    lock = multiprocessing.Lock()
-    def _job(pair):
-        row = get_row(data, pair[0], pair[1], get_middle_city=args.get_middle_city)
-        row_df = pd.DataFrame([row], columns=columns)
-        with lock:
-            row_df.to_csv(args.output_file, mode="a", index=False, header=False)
+        middle_city_columns = ['City A', 'City B', 'MIddle City']
+        middle_city_df = pd.DataFrame(columns=middle_city_columns)
+        middle_city_df_path = os.path.join(args.output_dir, "middle_cities.csv")
+        middle_city_df.to_csv(middle_city_df_path, index=False)
         
-    if args.no_mp:
-        for pair in tqdm(pairs):
-            _job(pair)
-    else:
-        with ProcessPoolExecutor(max_workers=24) as executor:
-            executor.map(_job, pairs)
+    for pair in tqdm(pairs):
+        distance = get_distance_between_cities(data, pair[0], pair[1], wgs84=args.wgs84)
+        distance_df = pd.DataFrame([[pair[0], pair[1], distance]], columns=distance_columns)
+        distance_df.to_csv(distance_df_path, mode="a", index=False, header=False)
+
+        if args.get_middle_city:
+            nearest_city = get_nearest_city(data, pair[0], pair[1])
+            middle_city_df = pd.DataFrame([[pair[0], pair[1], nearest_city]], columns=distance_columns)
+            middle_city_df.to_csv(middle_city_df_path, mode="a", index=False, header=False)
