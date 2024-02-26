@@ -100,9 +100,9 @@ class Transformer(nn.Module):
         initrange = 0.1
         self.embedding.weight.data.uniform_(-initrange, initrange)
 
-    def forward(self, src: Tensor) -> Tensor:
+    def forward(self, src: Tensor, src_mask: Tensor=None) -> Tensor:
         src = self.embedding(src) * math.sqrt(self.d_model)
-        src = self.transformer(src)
+        src = self.transformer(src, src_mask)
         output = self.regression_head(src)
         return output
 

@@ -39,7 +39,8 @@ class MiddleCityDataset(Dataset):
 
 
 class CityDistanceDataset(Dataset):
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, return_strings=False):
+        self.return_strings = return_strings
         self.city_to_int = get_city_to_int(data_dir)
         self.city_count = len(self.city_to_int)
         self.df = pd.read_csv(os.path.join(data_dir, "distances.csv"))
@@ -48,15 +49,18 @@ class CityDistanceDataset(Dataset):
         _normalise_column(self.df, "Distance")
 
     def __getitem__(self, idx):
-        x = [
-            self.city_to_int[self.df.loc[idx, "City A"]],
-            self.city_to_int[self.df.loc[idx, "City B"]],
-        ]
+        if self.return_strings:
+            x = f'{self.df.loc[idx, "City A"]} {self.df.loc[idx, "City B"]}'.lower()
+        else:
+            x = [
+                self.city_to_int[self.df.loc[idx, "City A"]],
+                self.city_to_int[self.df.loc[idx, "City B"]],
+            ]
         y = self.df.loc[idx, "Distance"]
         return x, y
 
     def __len__(self):
-        return len(self.df)
+        return len(self.df) 
 
 
 class CoordinateDistanceDataset(Dataset):
