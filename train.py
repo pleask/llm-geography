@@ -1,168 +1,190 @@
-import argparse
 import os
+import argparse
 
+import pandas as pd
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 from torch.optim import Adam
 from torch.utils.data import DataLoader, random_split 
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
+from tokenizers import Tokenizer, CharBPETokenizer
+from tokenizers.models import WordLevel
+from tokenizers.trainers import WordLevelTrainer
+from tokenizers.pre_tokenizers import Whitespace
 from tqdm import tqdm
 import wandb
-from dataset import CityDistanceDataset, CoordinateDistanceDataset, MiddleCityDataset
 
+from dataset import CityDistanceDataset, CoordinateDataset
 from model import Transformer
 
-# TODO: Lots of if statements for middle_city - find a better way to handle this
-if __name__ == "__main__":
-    wandb.init(project="geo")
 
-    parser = argparse.ArgumentParser(description='Train model on geography dataset')
-    parser.add_argument('--dataset', type=str, help='Path to the dataset CSV file')
-    parser.add_argument('--coordinate_distance', action='store_true', default=False, help='Use the coordinates as the covariates and the distance as the target.')
-    parser.add_argument('--city_distance', action='store_true', default=False, help='Use the city names as the covariates and the distance as the target.')
-    parser.add_argument('--middle_city', action='store_true', default=False, help='Use the city names as the covariates and the middle city as the target.')
-    parser.add_argument('--model_path', type=str, help='Where to save the model.', required=True)
-    parser.add_argument("--print_examples", action="store_true", default=False, help="Print out examples of the model's predictions.")
+class _CityTokenizerReturnValue:
+    def __init__(self, ids):
+        self.ids = ids
+        self.attention_mask = [1 for _ in ids]
 
-    args = parser.parse_args()
 
-    assert args.coordinate_distance or args.city_distance or args.middle_city, "Please specify the type of dataset you are using."
+class CityTokenizer:
+    """
+    Super hacky implementation of a tokenizer that only tokenizes city names.
+    """
+    def __init__(self, cities):
+        self.cities = cities
+        self.city_to_int = {city:i for i, city in enumerate(cities)}
 
-    if args.coordinate_distance:
-        dataset = CoordinateDistanceDataset(args.dataset)
-    elif args.city_distance:
-        dataset = CityDistanceDataset(args.dataset)
-    elif args.middle_city:
-        dataset = MiddleCityDataset(args.dataset)
+    def encode(self, city):
+        cities = city.split(', ')
+        return _CityTokenizerReturnValue([self.city_to_int[cities[0]], self.city_to_int[cities[1]]])
+    
+    def encode_batch(self, cities):
+        return [self.encode(city) for city in cities]
 
-    train_count = int(len(dataset) * 0.8)
-    val_count = len(dataset) - train_count
-    train_dataset, val_dataset = random_split(dataset, [train_count, val_count])
+    def save(self, _):
+        # TODO: Make this act more like a hf tokenizer
+        pass
 
-    EPOCHS = 500
+    def get_vocab(self):
+        return self.city_to_int.keys()
+
+
+def _get_tokenizer(cities, tokenizer_path, tokenize=False):
+    """
+    If the tokenizer already exists, load it. Otherwise, train a new one.
+
+    If tokenize is False, a dummy tokenizer is used that uses each city name as a token. Otherwise, a WordPiece tokenizer is trained.
+    """
+    if not tokenize:
+        return CityTokenizer(cities)
+
+    if os.path.exists(tokenizer_path):
+        tokenizer = Tokenizer.from_file(tokenizer_path)
+        return tokenizer
+
+    tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = Whitespace()
+    trainer = WordLevelTrainer(special_tokens=["[UNK]", "[CLS]", "[SEP]", "[PAD]", "[MASK]"])
+    tokenizer.train_from_iterator(cities, trainer)
+    tokenizer.save(tokenizer_path)
+    return tokenizer
+
+
+def tokenize_batch(tokenizer, x, device='cpu'):
+    output = tokenizer.encode_batch(x)
+    input_ids = [torch.tensor(enc.ids) for enc in output]
+    attention_mask = [torch.tensor(enc.attention_mask) for enc in output]
+    input_ids = pad_sequence(input_ids, batch_first=True).to(device)
+    attention_mask = pad_sequence(attention_mask, batch_first=True).to(device)
+    return input_ids, attention_mask
+
+
+def get_or_train_coordinate_model(data_dir, model_path, continue_training=False, tokenize=False, epochs=500):
+    cities = [s[0] for s in CoordinateDataset(data_dir)]
+
+    text = cities
+    if tokenize:
+        df = pd.read_csv('raw_data/all_cities.csv')
+        text = df['city'].tolist()
+    tokenizer = _get_tokenizer(text, model_path + '.tokenizer', tokenize=tokenize)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    distance_dataset = CityDistanceDataset(data_dir)
+
+    train_count = int(len(distance_dataset) * 0.8)
+    val_count = len(distance_dataset) - train_count
+    train_dataset, val_dataset = random_split(distance_dataset, [train_count, val_count])
+
     BATCH_SIZE = 2**10
+    LR = 1e-3
+    if not tokenize:
+        D_MODEL=32
+        NHEAD=4
+        D_HID=32
+        NLAYERS=1
+    else:
+        D_MODEL=128
+        NHEAD=4
+        D_HID=128
+        NLAYERS=2
 
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-    print("Train dataset size:", len(train_dataset))
-    print("Validation dataset size:", len(val_dataset))
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    D_MODEL = 32
-    NHEAD = 2
-    D_HID = 128
-    NLAYERS = 1
-    DROPOUT = 0.
-    LR = 1e-3
-    L1_LAMBDA = 0. #1e-5
-
-    wandb.config.update(
-        {
-            "batch_size": BATCH_SIZE,
-            "epochs": EPOCHS,
-            "d_model": D_MODEL,
-            "nhead": NHEAD,
-            "d_hid": D_HID,
-            "nlayers": NLAYERS,
-            "dropout": DROPOUT,
-            "lr": LR,
-            "l1_lambda": L1_LAMBDA,
-        }
-    )
 
     model = Transformer(
         d_model=D_MODEL,
         nhead=NHEAD,
         d_hid=D_HID,
         nlayers=NLAYERS,
-        dropout=DROPOUT,
-        ntoken=dataset.city_count,
-        regressor=not args.middle_city,
+        ntoken=len(tokenizer.get_vocab()),
+        regressor=True,
     ).to(device)
 
-    if os.path.exists(args.model_path):
-        model.load_state_dict(torch.load(args.model_path))
-        print("Loaded model parameters from existing model at", args.model_path)
+    if os.path.exists(model_path):
+        params = torch.load(model_path)
+        model.load_state_dict(params)
+        print("Loaded model parameters from existing model at", model_path)
+    
+    if not continue_training:
+        return model, tokenizer
 
-    total_params = sum(p.numel() for p in model.parameters())
-    print("Total number of parameters in the model:", total_params)
+    tags = ['tokenised'] if tokenize else []
+    wandb.init(project='geo', tags=tags, config={
+        'epochs': epochs,
+        'batch_size': BATCH_SIZE,
+        'lr': LR,
+        'd_model': D_MODEL,
+        'nhead': NHEAD,
+        'd_hid': D_HID,
+        'nlayers': NLAYERS,
+    })
 
-    if args.middle_city:
-        loss_fn = nn.CrossEntropyLoss()
-    else:
-        loss_fn = nn.MSELoss()
+    loss_fn = nn.MSELoss()
     optimizer = Adam(model.parameters(), lr=LR)
+    log_interval = 100
 
-    def _print_examples(outputs, y, train=True):
-        if not args.print_examples:
-            return
-        if train:
-            print('Train Examples')
-        else:
-            print('Val Examples')
-        for _o, _y in zip(outputs[:3], y[:3]):
-            if args.middle_city:
-                print(torch.argmax(_o).item(), _y.item())
-            else:
-                print("{:.3f}".format(_o.item()), "{:.3f}".format(_y.item()))
-
-    def _process_batch(x, y):
-        if args.coordinate_distance:
-            x = [x[0].to(device), x[1].to(torch.float32).to(device)]
-        else:
-            x = torch.stack([x[0], x[1]], dim=1).to(device)
-        
-        # TODO: Why is this necessary?
-        if args.middle_city:
-            y = y[0].to(device)
-        else:
-            y = y.to(torch.float32).to(device).unsqueeze(1)
-
-        return x, y
-
-    for epoch in tqdm(range(EPOCHS)):
+    for epoch in tqdm(range(epochs), desc='Epochs'):
         model.train()
-        total_loss = 0
-        total_loss_with_l1 = 0
-        for i, (x, y) in enumerate(train_dataloader):
-            x, y = _process_batch(x, y)
-            optimizer.zero_grad()
-            outputs = model(x)
-            loss = loss_fn(outputs, y)
-
-            # Log the loss without the l1 norm added for better comparison between model sizes
-            total_loss += loss.item()
-
-            l1_norm = sum(p.abs().sum() for p in model.parameters())
-            loss += L1_LAMBDA * l1_norm
-
-            total_loss_with_l1 += loss.item()
-
+        train_loss = 0
+        for batch, (x, y) in enumerate(tqdm(train_dataloader, desc='Training batches', leave=False)):
+            input_ids, attention_mask = tokenize_batch(tokenizer, x, device)
+            y = y.to(torch.float32).to(device)
+            y_pred = model(input_ids, attention_mask).squeeze(1)
+            loss = loss_fn(y_pred, y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
-
-        avg_train_loss = total_loss / len(train_dataloader)
-        avg_train_loss_with_l1 = total_loss_with_l1 / len(train_dataloader)
-        wandb.log({"train_loss": avg_train_loss, "train_loss_with_l1": avg_train_loss_with_l1})
-
-        _print_examples(outputs, y, train=True)
+            optimizer.zero_grad()
+            train_loss += loss.item()
+            if batch % log_interval == 0:
+                wandb.log({'train_loss': loss.item()})
+        train_loss /= len(train_dataloader)
 
         model.eval()
-        with torch.no_grad():
-            total_loss = 0
-            for i, (x, y) in enumerate(val_dataloader):
-                x, y = _process_batch(x, y)
-                outputs = model(x)
-                loss = loss_fn(outputs, y)
-                total_loss += loss.item()
+        val_loss = 0
+        for x, y in tqdm(val_dataloader, desc='Validation batches', leave=False):
+            input_ids, attention_mask = tokenize_batch(tokenizer, x, device)
+            y = y.to(torch.float32).to(device)
+            y_pred = model(input_ids, attention_mask).squeeze(1)
+            val_loss += loss_fn(y_pred, y).item()
+        val_loss /= len(val_dataloader)
 
-            avg_val_loss = total_loss / len(val_dataloader)
+        wandb.log({'train_loss': train_loss, 'val_loss': val_loss})
+        tqdm.write(f"Epoch {epoch + 1}/{epochs} | Train loss: {train_loss:,.4f} | Val loss: {val_loss:,.4f}")
 
-            _print_examples(outputs, y, train=False)
-        wandb.log({"val_loss": avg_val_loss})
+        torch.save(model.state_dict(), model_path)
 
-        tqdm.write(
-            f"Epoch {epoch}: Validation loss {avg_val_loss:.3f}, train loss {avg_train_loss:.3f}, train loss with l1 {avg_train_loss_with_l1:.3f}"
-        )
+    return model, tokenizer
 
-        torch.save(model.state_dict(), args.model_path)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Train or load a coordinate model.')
+    parser.add_argument('--data_dir', type=str, required=True, help='Directory containing the data.')
+    parser.add_argument('--model_path', type=str, required=True, help='Model location.')
+    parser.add_argument('--continue_training', type=bool, default=False, help='Continue training from the last checkpoint.')
+    parser.add_argument('--tokenize', type=bool, default=False, help='Use a word piece tokenizer rather than the city names.')
+    parser.add_argument('--epochs', type=int, help='Epochs to train for.')
+    args = parser.parse_args()
+
+    get_or_train_coordinate_model(args.data_dir, args.model_path, continue_training=args.continue_training, epochs=args.epochs, tokenize=args.tokenize)
